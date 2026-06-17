@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>LBK Quick Scan</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: linear-gradient(135deg, #5b21b6 0%, #3b0f7a 100%);
+      min-height: 100vh; display: flex; flex-direction: column;
+      align-items: center; justify-content: center; padding: 20px;
+      color: white;
+    }
+    h1 { font-size: 28px; margin-bottom: 10px; text-align: center; }
+    p { font-size: 16px; opacity: 0.9; margin-bottom: 24px; text-align: center; max-width: 500px; }
+    .scanner-card {
+      background: white; color: #1f2937; border-radius: 20px;
+      padding: 24px; max-width: 480px; width: 100%;
+      box-shadow: 0 25px 80px rgba(0, 0, 0, 0.4);
+    }
+    .scanner-frame {
+      position: relative; background: #000; border-radius: 14px;
+      overflow: hidden; aspect-ratio: 1 / 1; max-width: 360px;
+      margin: 0 auto 16px auto;
+    }
+    #video { width: 100%; height: 100%; object-fit: cover; display: block; }
+    .scanner-frame::before {
+      content: ""; position: absolute; top: 12%; left: 12%; right: 12%; bottom: 12%;
+      border: 3px solid #10b981; border-radius: 10px;
+      pointer-events: none; z-index: 2;
+      animation: scanPulse 2s ease-in-out infinite;
+    }
+    @keyframes scanPulse { 0%,100% { border-color: #10b981; } 50% { border-color: #fbbf24; } }
+    #status {
+      padding: 12px 14px; border-radius: 10px; font-size: 14px;
+      font-weight: 600; margin-bottom: 14px; display: none; text-align: left;
+    }
+    #status.info    { background: #dbeafe; color: #1e40af; display: block; }
+    #status.success { background: #d1fae5; color: #065f46; display: block; }
+    #status.error   { background: #fee2e2; color: #991b1b; display: block; }
+    #status.warning { background: #fef3c7; color: #92400e; display: block; }
+    button {
+      width: 100%; padding: 16px; border: none; border-radius: 12px;
+      font-size: 17px; font-weight: 800; cursor: pointer;
+      transition: transform 0.15s ease;
+    }
+    button:active { transform: scale(0.98); }
+    .btn-primary { background: linear-gradient(135deg, #10b981 0%, #059669 100%); color: white; }
+    .btn-ghost { background: #f3f4f6; color: #374151; margin-top: 10px; }
+    button:disabled { background: #9ca3af; cursor: not-allowed; }
+    input[type="text"] {
+      width: 100%; padding: 14px; border: 2px solid #d1d5db;
+      border-radius: 10px; font-size: 16px; margin-bottom: 10px;
+      text-align: center; letter-spacing: 2px;
+    }
+    .config-box {
+      background: #fef3c7; border: 1px solid #fbbf24; border-radius: 10px;
+      padding: 12px; margin-bottom: 16px; font-size: 13px; color: #92400e;
+    }
+    .config-box input { margin-top: 8px; }
+  </style>
+</head>
+<body>
+  <h1>📷 LBK Quick Scan</h1>
+  <p>Point your camera at the attendee's QR code. After scan, your admin check-in page opens automatically.</p>
+
+  <div class="scanner-card">
+    <!-- First-time setup: paste your Apps Script web app URL once -->
+    <div class="config-box" id="configBox">
+      <strong>First-time setup:</strong> Paste your Apps Script web app URL below.
+      It will be saved in this browser for future scans.
+      <input type="text" id="scriptUrlInput" placeholder="https://script.google.com/macros/s/AKfycb.../exec" />
+      <button class="btn-primary" id="saveUrlBtn" style="margin-top:8px;">💾 Save URL</button>
+    </div>
+
+    <div id="status"></div>
+    <div class="scanner-frame">
+      <video id="video" playsinline autoplay muted></video>
+    </div>
+
+    <button class="btn-primary" id="scanBtn">📷 Start Scanning</button>
+    <button class="btn-ghost" id="manualBtn" style="display:none">Type ref manually instead</button>
+    <input type="text" id="manualInput" placeholder="Or type LBK26-FA-XXX" style="display:none" />
+    <button class="btn-primary" id="submitManualBtn" style="display:none">Submit</button>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js"></script>
+  <canvas id="canvas" style="display:none"></canvas>
+
+  <script>
+    (function () {
+      "use strict";
+      const $ = (id) => document.getElementById(id);
+      const video = () => $("video");
+      const canvas = () => $("canvas");
+      const statusEl = () => $("status");
+
+      let stream = null;
+      let rafId = null;
+      let scanning = false;
+
+      function setStatus(msg, type) {
+        const el = statusEl();
+        el.className = type || "";
+        el.textContent = msg;
+      }
+
+      function getScriptUrl() {
+        return localStorage.getItem("lbk_script_url") || "";
+      }
+      function setScriptUrl(url) {
+        localStorage.setItem("lbk_script_url", url.trim());
+      }
+
+      // Hide config box once URL is saved
+      if (getScriptUrl()) {
+        $("configBox").style.display = "none";
+      }
+
+      $("saveUrlBtn").onclick = function () {
+        const url = $("scriptUrlInput").value.trim();
+        if (!url.startsWith("https://script.google.com/")) {
+          setStatus("Please paste a valid Apps Script URL (must start with https://script.google.com/)", "error");
+          return;
+        }
+        setScriptUrl(url);
+        $("configBox").style.display = "none";
+        setStatus("✅ URL saved. Tap Start Scanning.", "success");
+      };
+
+      async function startCamera() {
+        if (stream) return;
+        try {
+          setStatus("Starting camera...", "info");
+          stream = await navigator.mediaDevices.getUserMedia({
+            video: { facingMode: "environment", width: { ideal: 1280 }, height: { ideal: 720 } },
+            audio: false,
+          });
+          video().srcObject = stream;
+          await video().play();
+          setStatus("Point the camera at the QR code", "info");
+          scanLoop();
+        } catch (err) {
+          setStatus("Camera unavailable (" + err.name + "). Use manual entry below.", "error");
+          $("manualBtn").style.display = "block";
+        }
+      }
+
+      function stopCamera() {
+        if (rafId) cancelAnimationFrame(rafId);
+        rafId = null;
+        if (stream) {
+          stream.getTracks().forEach((t) => t.stop());
+          stream = null;
+        }
+        const v = video();
+        if (v) v.srcObject = null;
+      }
+
+      function scanLoop() {
+        const v = video();
+        if (!v || v.readyState !== v.HAVE_ENOUGH_DATA) {
+          rafId = requestAnimationFrame(scanLoop);
+          return;
+        }
+        const c = canvas();
+        c.width = v.videoWidth; c.height = v.videoHeight;
+        const ctx = c.getContext("2d", { willReadFrequently: true });
+        ctx.drawImage(v, 0, 0, c.width, c.height);
+        let img;
+        try { img = ctx.getImageData(0, 0, c.width, c.height); }
+        catch (e) { rafId = requestAnimationFrame(scanLoop); return; }
+        const code = (typeof jsQR !== "undefined") ? jsQR(img.data, img.width, img.height, { inversionAttempts: "attemptBoth" }) : null;
+        if (code && code.data) {
+          onScanned(code.data);
+          return;
+        }
+        rafId = requestAnimationFrame(scanLoop);
+      }
+
+      function extractRef(text) {
+        if (!text) return null;
+        text = String(text).trim();
+        let m = text.match(/LBK26-[FB]A-\d+/i);
+        if (m) return m[0].toUpperCase();
+        m = text.match(/Ref(?:erence)?\s*name\s*:\s*(LBK26-[FB]A-\d+)/i);
+        if (m) return m[1].toUpperCase();
+        m = text.match(/Ref(?:erence)?\s*:\s*(LBK26-[FB]A-\d+)/i);
+        if (m) return m[1].toUpperCase();
+        m = text.match(/\b(FA|BA)-\d+\b/i);
+        if (m) return "LBK26-" + m[0].toUpperCase();
+        return null;
+      }
+
+      function onScanned(rawData) {
+        const ref = extractRef(rawData);
+        if (!ref) {
+          setStatus("Scanned, but no reference found in: " + rawData.substring(0, 50), "error");
+          return;
+        }
+        stopCamera();
+        redirectToCheckin(ref);
+      }
+
+      function redirectToCheckin(ref) {
+        const url = getScriptUrl();
+        if (!url) {
+          setStatus("⚠️ Please set the Apps Script URL above first.", "error");
+          $("configBox").style.display = "block";
+          return;
+        }
+        setStatus("✅ Scanned: " + ref + " — opening check-in...", "success");
+        setTimeout(function () {
+          // Append ?ref= so the Apps Script knows what was scanned
+          window.location.replace(url + (url.indexOf("?") >= 0 ? "&" : "?") + "ref=" + encodeURIComponent(ref));
+        }, 400);
+      }
+
+      $("scanBtn").onclick = function () {
+        scanning = true;
+        startCamera();
+      };
+
+      $("manualBtn").onclick = function () {
+        $("manualInput").style.display = "block";
+        $("submitManualBtn").style.display = "block";
+        $("manualInput").focus();
+      };
+
+      $("submitManualBtn").onclick = function () {
+        const v = $("manualInput").value.trim();
+        const ref = extractRef(v);
+        if (!ref) {
+          setStatus("Please enter a valid reference (e.g. LBK26-FA-001)", "error");
+          return;
+        }
+        redirectToCheckin(ref);
+      };
+
+      $("manualInput").onkeydown = function (e) {
+        if (e.key === "Enter") $("submitManualBtn").click();
+      };
+
+      window.addEventListener("beforeunload", stopCamera);
+    })();
+  </script>
+</body>
+</html>
